@@ -87,9 +87,9 @@ async def metadata() -> dict[str, Any]:
         "team_members": ["Kishore"],
         "model": "deterministic-rule-engine",
         "approach": "trigger router + grounded category/merchant/customer templates + reply intent handling",
-        "contact_email": os.getenv("VERA_CONTACT_EMAIL", "candidate@example.com"),
+        "contact_email": os.getenv("VERA_CONTACT_EMAIL", "kishorjnv7329@gmail.com"),
         "version": "1.0.1",
-        "submitted_at": "2026-04-26T08:00:00Z",
+       "submitted_at": "2026-09-09T13:30:00Z",
     }
 
 
