@@ -400,9 +400,23 @@ def _cde_opportunity(category, merchant, trigger):
 
 
 def _active_planning(category, merchant, trigger):
-    topic = trigger.get("payload", {}).get("topic") or trigger.get("payload", {}).get("intent") or "the plan"
-    body = f"{_owner(merchant)}, here is the next practical step for {topic}: I will draft one offer, one customer WhatsApp, and one post using {_best_offer(merchant, category)}. Reply CONFIRM and I will prepare it."
-    return {"body": body, "cta": "binary_confirm_cancel", "rationale": "Active planning means commitment has begun, so the bot moves to action mode."}
+    p = trigger.get("payload", {})
+    topic = (
+        p.get("intent_topic")
+        or p.get("topic")
+        or p.get("intent")
+        or "your plan"
+    )
+    body = (
+        f"{_owner(merchant)}, here is the next practical step for {topic}: "
+        f"I will draft one offer, one customer WhatsApp, and one post using "
+        f"{_best_offer(merchant, category)}. Reply CONFIRM and I will prepare it."
+    )
+    return {
+        "body": body,
+        "cta": "binary_confirm_cancel",
+        "rationale": "Active planning means commitment has begun, so the bot moves to action mode.",
+    }
 
 
 def _generic_merchant(category, merchant, trigger):
