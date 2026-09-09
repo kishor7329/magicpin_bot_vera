@@ -87,8 +87,8 @@ async def metadata() -> dict[str, Any]:
         "team_members": ["Kishore"],
         "model": "deterministic-rule-engine",
         "approach": "trigger router + grounded category/merchant/customer templates + reply intent handling",
-        "contact_email": "candidate@example.com",
-        "version": "1.0.0",
+        "contact_email": os.getenv("VERA_CONTACT_EMAIL", "candidate@example.com"),
+        "version": "1.0.1",
         "submitted_at": "2026-04-26T08:00:00Z",
     }
 
@@ -219,7 +219,9 @@ def _compose_customer(category, merchant, trigger, customer):
         return _finalize(_customer_recall(category, merchant, trigger, customer), trigger, "merchant_on_behalf")
     if kind == "chronic_refill_due":
         return _finalize(_chronic_refill(category, merchant, trigger, customer), trigger, "merchant_on_behalf")
-    if kind in {"customer_lapsed_hard", "winback_eligible", "trial_followup", "wedding_package_followup"}:
+    if kind == "appointment_tomorrow":
+        return _finalize(_appointment_reminder(category, merchant, trigger, customer), trigger, "merchant_on_behalf")
+    if kind in {"customer_lapsed_hard", "winback_eligible", "trial_followup", "wedding_package_followup", "customer_lapsed_soft"}:
         return _finalize(_customer_winback(category, merchant, trigger, customer), trigger, "merchant_on_behalf")
     return _finalize(_generic_customer(category, merchant, trigger, customer), trigger, "merchant_on_behalf")
 
@@ -256,11 +258,15 @@ def _supply_alert(category, merchant, trigger):
 def _perf_dip(category, merchant, trigger):
     p = trigger.get("payload", {})
     metric = p.get("metric", "performance")
-    delta = _pct_abs(p.get("delta_pct"))
-    baseline = p.get("vs_baseline")
+    raw_delta = p.get("delta_pct")
     peer_ctr = category.get("peer_stats", {}).get("avg_ctr")
     ctr = merchant.get("performance", {}).get("ctr")
     peer = f" Your CTR is {_pct(ctr)} vs {_pct(peer_ctr)} peer benchmark." if ctr and peer_ctr else ""
+    if raw_delta is None:
+        body = f"{_owner(merchant)}, I'm seeing a dip signal on {metric} over {p.get('window', '7d')} but don't have the exact drop yet.{peer} Want me to pull the number and draft the fix once it's confirmed?"
+        return {"body": body, "cta": "binary_yes_no", "rationale": "Dip trigger fired without a numeric delta in payload; avoided fabricating a percentage."}
+    delta = _pct_abs(raw_delta)
+    baseline = p.get("vs_baseline")
     base = f" from {baseline}" if baseline else ""
     verb = "are" if str(metric).endswith("s") else "is"
     body = f"{_owner(merchant)}, {metric} {verb} down {delta} over {p.get('window', '7d')}{base}.{peer} Want me to draft the one listing fix most likely to recover discovery?"
@@ -285,8 +291,9 @@ def _renewal_due(category, merchant, trigger):
 def _competitor_opened(category, merchant, trigger):
     p = trigger.get("payload", {})
     dist = p.get("distance_km") or p.get("distance")
+    dist_text = f"{dist} km" if dist is not None else "close by"
     competitor = p.get("competitor_name", "a new competitor")
-    body = f"{_owner(merchant)}, {competitor} just appeared {dist} km from {_locality(merchant)}. Want me to compare their listing against yours and show the 2 gaps customers will notice first?"
+    body = f"{_owner(merchant)}, {competitor} just appeared {dist_text} from {_locality(merchant)}. Want me to compare their listing against yours and show the 2 gaps customers will notice first?"
     return {"body": body, "cta": "binary_yes_no", "rationale": "Competitor trigger uses local threat, curiosity, and a concrete comparison offer."}
 
 
@@ -310,15 +317,22 @@ def _ipl_match_today(category, merchant, trigger):
 def _review_theme(category, merchant, trigger):
     theme = _first(merchant.get("review_themes", [])) or {}
     quote = theme.get("common_quote")
-    body = f"{_owner(merchant)}, {theme.get('occurrences_30d', 'multiple')} recent reviews mention {theme.get('theme', 'one repeated issue')}. Customer line: \"{quote}\". Want me to draft a calm reply + one profile update?"
+    quote_text = f' Customer line: "{quote}".' if quote else ""
+    body = f"{_owner(merchant)}, {theme.get('occurrences_30d', 'multiple')} recent reviews mention {theme.get('theme', 'one repeated issue')}.{quote_text} Want me to draft a calm reply + one profile update?"
     return {"body": body, "cta": "binary_yes_no", "rationale": "Review theme trigger uses the repeated complaint/praise as the strongest verifiable hook."}
 
 
 def _milestone(category, merchant, trigger):
     p = trigger.get("payload", {})
     metric = p.get("metric", "milestone")
-    value = p.get("value") or p.get("count")
-    body = f"{_owner(merchant)}, you just crossed {value} {metric}. Want me to turn that into a trust-building Google post for new customers in {_locality(merchant)}?"
+    value = p.get("value_now") or p.get("value") or p.get("count")
+    target = p.get("milestone_value")
+    if value is not None:
+        value_text = f"{value} {metric}"
+    else:
+        value_text = f"a new {metric} milestone"
+    target_text = f" (closing in on {target})" if target and value is not None else ""
+    body = f"{_owner(merchant)}, you just crossed {value_text}{target_text}. Want me to turn that into a trust-building Google post for new customers in {_locality(merchant)}?"
     return {"body": body, "cta": "binary_yes_no", "rationale": "Milestone trigger turns proof into reputation marketing."}
 
 
@@ -357,8 +371,16 @@ def _active_planning(category, merchant, trigger):
 
 
 def _generic_merchant(category, merchant, trigger):
-    body = f"{_owner(merchant)}, I noticed {trigger.get('kind', 'a new signal')} for {_merchant_short(merchant)}. Want me to turn it into one concrete growth action using your current listing context?"
-    return {"body": body, "cta": "binary_yes_no", "rationale": "Fallback keeps message grounded in trigger kind and avoids invented details."}
+    p = trigger.get("payload", {})
+    fact = next(
+        (f"{str(k).replace('_', ' ')}: {v}" for k, v in p.items()
+         if k not in {"placeholder", "metric_or_topic"} and v not in (None, "", [])),
+        None,
+    )
+    hook = f" ({fact})" if fact else ""
+    kind_label = str(trigger.get("kind") or "a new signal").replace("_", " ")
+    body = f"{_owner(merchant)}, I noticed {kind_label}{hook} for {_merchant_short(merchant)}. Want me to turn it into one concrete growth action using your current listing context?"
+    return {"body": body, "cta": "binary_yes_no", "rationale": "Fallback surfaces any concrete payload field found for an unrecognized trigger kind and avoids invented details."}
 
 
 def _customer_recall(category, merchant, trigger, customer):
@@ -370,20 +392,38 @@ def _customer_recall(category, merchant, trigger, customer):
     slot_text = " or ".join(slot.get("label", "") for slot in slots[:2] if slot.get("label"))
     offer = _best_offer(merchant, category)
     mix = _is_hi_en(customer)
-    if mix:
-        body = f"Hi {name}, {merchant_label} here. It has been {elapsed} since your last visit; your {p.get('service_due', 'recall').replace('_', ' ')} is due. Apke liye 2 slots ready hain: {slot_text}. {offer}. Reply 1 for first slot, 2 for second, or share a better time."
+    if slot_text:
+        hold_text = f"Apke liye 2 slots ready hain: {slot_text}." if mix else f"I can hold {slot_text}."
     else:
-        body = f"Hi {name}, {merchant_label} here. It has been {elapsed} since your last visit; your {p.get('service_due', 'recall').replace('_', ' ')} is due. I can hold {slot_text}. {offer}. Reply 1 for first slot, 2 for second, or share a better time."
+        hold_text = "Bataiye aapke liye kaunsa time better hoga." if mix else "Let me know a time that works and I will lock a slot."
+    body = f"Hi {name}, {merchant_label} here. It has been {elapsed} since your last visit; your {p.get('service_due', 'recall').replace('_', ' ')} is due. {hold_text} {offer}. Reply 1 for first slot, 2 for second, or share a better time."
     return {"body": body, "cta": "multi_choice_slot", "rationale": "Customer recall uses consented customer context, last visit timing, available slots, and merchant offer."}
 
 
 def _chronic_refill(category, merchant, trigger, customer):
     p = trigger.get("payload", {})
     medicines = _join_list(p.get("medicines") or p.get("items") or customer.get("relationship", {}).get("services_received", []))
+    medicine_text = f" ({medicines})" if medicines else ""
     runout = _date_label(p.get("runout_date") or p.get("due_date"))
     offer = _best_offer(merchant, category)
-    body = f"Namaste {_customer_name(customer)}, {_merchant_customer_label(merchant)} here. Your regular medicines ({medicines}) are due around {runout}. {offer}. Reply CONFIRM to keep the same pack ready, or call us if the dose changed."
+    body = f"Namaste {_customer_name(customer)}, {_merchant_customer_label(merchant)} here. Your regular medicines{medicine_text} are due around {runout}. {offer}. Reply CONFIRM to keep the same pack ready, or call us if the dose changed."
     return {"body": body, "cta": "binary_confirm_cancel", "rationale": "Refill trigger is precise, respectful, and asks for confirmation before dispatch."}
+
+
+def _appointment_reminder(category, merchant, trigger, customer):
+    p = trigger.get("payload", {})
+    when = p.get("appointment_time") or p.get("slot_label") or p.get("time") or "tomorrow"
+    service = p.get("service") or p.get("service_due", "your appointment").replace("_", " ")
+    body = (
+        f"Hi {_customer_name(customer)}, {_merchant_customer_label(merchant)} here. "
+        f"Reminder: {service} is booked for {when}. Reply CONFIRM to keep it, "
+        f"or let us know if you need to reschedule."
+    )
+    return {
+        "body": body,
+        "cta": "binary_confirm_cancel",
+        "rationale": "Appointment reminder confirms the booked slot and offers an easy reschedule path.",
+    }
 
 
 def _customer_winback(category, merchant, trigger, customer):
@@ -394,8 +434,15 @@ def _customer_winback(category, merchant, trigger, customer):
 
 
 def _generic_customer(category, merchant, trigger, customer):
-    body = f"Hi {_customer_name(customer)}, {_merchant_customer_label(merchant)} here. A quick update related to your last visit: reply YES and we will share the useful details."
-    return {"body": body, "cta": "binary_yes_no", "rationale": "Customer fallback avoids unsupported claims while keeping a simple consented CTA."}
+    p = trigger.get("payload", {})
+    fact = next(
+        (f"{str(k).replace('_', ' ')}: {v}" for k, v in p.items()
+         if k not in {"placeholder", "metric_or_topic"} and v not in (None, "", [])),
+        None,
+    )
+    hook = f" ({fact})" if fact else " related to your last visit"
+    body = f"Hi {_customer_name(customer)}, {_merchant_customer_label(merchant)} here. A quick update{hook}: reply YES and we will share the useful details."
+    return {"body": body, "cta": "binary_yes_no", "rationale": "Customer fallback surfaces any concrete payload field found and avoids unsupported claims while keeping a simple consented CTA."}
 
 
 def _finalize(result, trigger, send_as):
