@@ -276,16 +276,51 @@ def _perf_dip(category, merchant, trigger):
 def _perf_spike(category, merchant, trigger):
     p = trigger.get("payload", {})
     metric = p.get("metric", "views")
-    body = f"{_owner(merchant)}, {metric} jumped {_pct(p.get('delta_pct'))} in the last {p.get('window', '7d')}. Want me to convert the spike into a quick offer post using {_best_offer(merchant, category)}?"
-    return {"body": body, "cta": "binary_yes_no", "rationale": "Performance spike is an opportunity trigger; message turns attention into an immediate action."}
+    raw_delta = p.get("delta_pct")
+
+    if raw_delta is None:
+        body = (
+            f"{_owner(merchant)}, {metric} has a recent activity signal, "
+            f"but I do not have the exact increase yet. Want me to verify it "
+            f"and turn the attention into a quick offer post using "
+            f"{_best_offer(merchant, category)}?"
+        )
+        return {
+            "body": body,
+            "cta": "binary_yes_no",
+            "rationale": "Spike signal arrived without a numeric increase; avoided inventing a percentage.",
+        }
+
+    body = (
+        f"{_owner(merchant)}, {metric} jumped {_pct(raw_delta)} in the last "
+        f"{p.get('window', '7d')}. Want me to convert the spike into a quick "
+        f"offer post using {_best_offer(merchant, category)}?"
+    )
+    return {
+        "body": body,
+        "cta": "binary_yes_no",
+        "rationale": "Performance spike is an opportunity trigger paired with an immediate action.",
+    }
 
 
 def _renewal_due(category, merchant, trigger):
-    days = trigger.get("payload", {}).get("days_remaining") or merchant.get("subscription", {}).get("days_remaining")
-    plan = trigger.get("payload", {}).get("plan") or merchant.get("subscription", {}).get("plan")
+    p = trigger.get("payload", {})
+    days = p.get("days_remaining") or merchant.get("subscription", {}).get("days_remaining")
+    plan = p.get("plan") or merchant.get("subscription", {}).get("plan")
+
+    plan_text = f"your {plan} plan" if plan else "your magicpin plan"
+    timing_text = f"has {days} days left" if days is not None else "is coming up for renewal"
     proof = _merchant_performance_anchor(merchant)
-    body = f"{_owner(merchant)}, your {plan} plan has {days} days left.{proof} Want me to send a one-screen summary of what magicpin drove this month before renewal?"
-    return {"body": body, "cta": "binary_yes_no", "rationale": "Renewal trigger should justify value before asking for payment."}
+
+    body = (
+        f"{_owner(merchant)}, {plan_text} {timing_text}.{proof} "
+        "Want me to send a one-screen summary of what magicpin drove this month before renewal?"
+    )
+    return {
+        "body": body,
+        "cta": "binary_yes_no",
+        "rationale": "Renewal trigger explains value before asking for a decision.",
+    }
 
 
 def _competitor_opened(category, merchant, trigger):
